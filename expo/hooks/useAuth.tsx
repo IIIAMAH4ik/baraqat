@@ -1,77 +1,41 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Platform } from "react-native";
-import * as WebBrowser from "expo-web-browser";
-import * as Linking from "expo-linking";
-import * as SecureStore from "expo-secure-store";
-import * as Crypto from "expo-crypto";
-import { base64Encode, base64DecodeToString } from "@/lib/base64";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { supabase } from "@/lib/supabase";
-
-const AUTH_URL = process.env.EXPO_PUBLIC_RORK_AUTH_URL!;
-const APP_KEY = process.env.EXPO_PUBLIC_RORK_APP_KEY!;
-const PROJECT_ID = process.env.EXPO_PUBLIC_PROJECT_ID!;
-
-function generateCodeVerifier(): string {
-  const bytes = Crypto.getRandomBytes(32);
-  return base64Encode(bytes)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-async function generateCodeChallenge(verifier: string): Promise<string> {
-  const hash = await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    verifier
-  );
-  // digestStringAsync returns a hex string; convert to base64url
-  const bytes = hexToBytes(hash);
-  return base64Encode(bytes)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
-}
+import type { Session } from "@supabase/supabase-js";
 
 export interface User {
   id: string;
   email: string;
-  name?: string;
-  picture?: string;
-  phone?: string;
+  name?: string | null;
+  picture?: string | null;
+  phone?: string | null;
   role?: string;
-}
-
-function userFromToken(token: string): User | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(base64DecodeToString(parts[1]));
-    if (payload.exp && payload.exp * 1000 < Date.now()) return null;
-    return {
-      id: payload.sub,
-      email: payload.email ?? "",
-      name: payload.name,
-      picture: payload.picture,
-      role: payload.role ?? "customer",
-    };
-  } catch {
-    return null;
-  }
 }
 
 interface AuthContextType {
   user: User | null;
+  session: Session | null;
   isLoading: boolean;
   isSigningIn: boolean;
   error: string | null;
+
+  signUp: (params: {
+    email: string;
+    password: string;
+    name?: string;
+    phone?: string;
+  }) => Promise<void>;
+
+  signInWithPassword: (params: {
+    email: string;
+    password: string;
+  }) => Promise<void>;
+
   signIn: (provider: "google" | "apple") => Promise<void>;
   signOut: () => Promise<void>;
   clearError: () => void;
@@ -79,202 +43,220 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+function mapAuthUserToUser(authUser: Session["user"], profile?: any): User {
+  return {
+    id: authUser.id,
+    email: authUser.email ?? "",
+    name:
+      profile?.name ??
+      authUser.user_metadata?.full_name ??
+      authUser.user_metadata?.name ??
+      null,
+    picture:
+      profile?.avatar_url ??
+      authUser.user_metadata?.avatar_url ??
+      authUser.user_metadata?.picture ??
+      null,
+    phone: profile?.phone ?? null,
+    role: profile?.role ?? "client",
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const codeVerifierRef = useRef<string | null>(null);
 
-  function clearError() { setError(null); }
-
-  useEffect(() => { checkAuth(); }, []);
+  function clearError() {
+    setError(null);
+  }
 
   useEffect(() => {
-    const subscription = Linking.addEventListener("url", handleDeepLink);
-    return () => subscription.remove();
-  }, []);
+    loadSession();
 
-  async function checkAuth() {
-    try {
-      const accessToken = await SecureStore.getItemAsync("access_token");
-      if (!accessToken) {
-        const refreshTokenStored = await SecureStore.getItemAsync("refresh_token");
-        if (refreshTokenStored) await refreshToken();
-        setIsLoading(false);
+    const { data } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      setSession(newSession);
+
+      if (!newSession?.user) {
+        setUser(null);
         return;
       }
-      const decoded = userFromToken(accessToken);
-      if (decoded) {
-        setUser(decoded);
-        await syncProfile(decoded);
+
+      await loadUserProfile(newSession);
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function loadSession() {
+    try {
+      setIsLoading(true);
+
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+        throw error;
+      }
+
+      setSession(data.session);
+
+      if (data.session?.user) {
+        await loadUserProfile(data.session);
       } else {
-        await refreshToken();
+        setUser(null);
       }
     } catch (err) {
-      console.error("Auth check failed:", err);
+      console.error("Auth session load failed:", err);
+      setError(err instanceof Error ? err.message : "Не удалось загрузить сессию");
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function handleDeepLink(event: { url: string }) {
-    try {
-      const url = new URL(event.url);
-      if (url.pathname === "/auth/callback") {
-        const code = url.searchParams.get("code");
-        if (code) await exchangeCode(code);
-      }
-    } catch (err) {
-      console.error("Deep link handling failed:", err);
-      setError(err instanceof Error ? err.message : "Sign in failed");
+  async function loadUserProfile(currentSession: Session) {
+    const authUser = currentSession.user;
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,email,name,phone,avatar_url,role")
+      .eq("id", authUser.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error("Profile load failed:", profileError);
     }
+
+    setUser(mapAuthUserToUser(authUser, profile));
   }
 
-  async function syncProfile(u: User) {
-    try {
-      const { data: existingProfile } = await supabase.from("profiles").select("role,name,phone").eq("id", u.id).maybeSingle();
-      const profileData = {
-        id: u.id,
-        email: u.email,
-        name: u.name || (existingProfile as Record<string, unknown> | null)?.name || null,
-        avatar_url: u.picture || null,
-        updated_at: new Date().toISOString(),
-      };
-      await supabase.from("profiles").upsert(profileData, { onConflict: "id" });
-
-      // Propagate role from DB profile to in-memory user object (for admin checks)
-      const dbRole = (existingProfile as Record<string, unknown> | null)?.role as string | undefined;
-      if (dbRole && dbRole !== "customer") {
-        setUser((prev) => prev ? { ...prev, role: dbRole } : prev);
-      }
-
-      // Ensure loyalty_points row exists for the user
-      const { data: existing } = await supabase.from("loyalty_points").select("id").eq("user_id", u.id).maybeSingle();
-      if (!existing) {
-        await supabase.from("loyalty_points").insert({
-          user_id: u.id, points: 0, tier: "bronze", total_earned: 0, total_spent: 0,
-        });
-      }
-    } catch (e) {
-      // Profile sync is best-effort
-    }
-  }
-
-  async function signIn(provider: "google" | "apple") {
+  async function signUp(params: {
+    email: string;
+    password: string;
+    name?: string;
+    phone?: string;
+  }) {
     setIsSigningIn(true);
     setError(null);
+
     try {
-      const verifier = generateCodeVerifier();
-      const challenge = await generateCodeChallenge(verifier);
-      codeVerifierRef.current = verifier;
+      const email = params.email.trim().toLowerCase();
 
-      const isWeb = Platform.OS === "web";
-      const target = "rn";
-      const env = isWeb ? "preview" : "native";
+      if (!email) {
+        throw new Error("Введите email");
+      }
 
-      const response = await fetch(`${AUTH_URL}/oauth/initiate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_key: APP_KEY, provider, code_challenge: challenge, target, env }),
+      if (!params.password || params.password.length < 6) {
+        throw new Error("Пароль должен быть минимум 6 символов");
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password: params.password,
+        options: {
+          data: {
+            name: params.name?.trim() || null,
+            full_name: params.name?.trim() || null,
+            phone: params.phone?.trim() || null,
+          },
+        },
       });
 
-      if (!response.ok) {
-        codeVerifierRef.current = null;
-        const body = await response.json().catch(() => ({}));
-        setError(body.error || `Sign in failed (${response.status})`);
-        return;
+      if (error) {
+        throw error;
       }
 
-      const { auth_url } = await response.json();
-
-      if (isWeb) {
-        const popup = window.open(auth_url, "_blank", "width=500,height=650");
-        await new Promise<void>((resolve, reject) => {
-          const onMessage = (event: MessageEvent) => {
-            if (event.data?.type !== "rork_auth_callback") return;
-            window.removeEventListener("message", onMessage);
-            clearInterval(pollTimer);
-            const code = event.data.code;
-            if (code) exchangeCode(code).then(resolve, reject);
-            else reject(new Error("No code received"));
-          };
-          window.addEventListener("message", onMessage);
-          const pollTimer = setInterval(() => {
-            if (popup?.closed) {
-              clearInterval(pollTimer);
-              window.removeEventListener("message", onMessage);
-              codeVerifierRef.current = null;
-              resolve();
-            }
-          }, 500);
-        });
-      } else {
-        const result = await WebBrowser.openAuthSessionAsync(auth_url, `rork-${PROJECT_ID}://auth/callback`);
-        if (result.type === "success") {
-          const url = new URL(result.url);
-          const code = url.searchParams.get("code");
-          if (code) await exchangeCode(code);
-        }
+      if (data.session?.user) {
+        setSession(data.session);
+        await loadUserProfile(data.session);
       }
     } catch (err) {
-      console.error("Sign in failed:", err);
-      setError(err instanceof Error ? err.message : "Sign in failed");
+      console.error("Sign up failed:", err);
+      setError(err instanceof Error ? err.message : "Ошибка регистрации");
     } finally {
       setIsSigningIn(false);
     }
   }
 
-  async function exchangeCode(code: string) {
-    const verifier = codeVerifierRef.current;
-    if (!verifier) return;
-    codeVerifierRef.current = null;
+  async function signInWithPassword(params: {
+    email: string;
+    password: string;
+  }) {
+    setIsSigningIn(true);
+    setError(null);
 
-    const response = await fetch(`${AUTH_URL}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_key: APP_KEY, code, code_verifier: verifier }),
-    });
+    try {
+      const email = params.email.trim().toLowerCase();
 
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setError(body.error || `Token exchange failed (${response.status})`);
-      return;
+      if (!email) {
+        throw new Error("Введите email");
+      }
+
+      if (!params.password) {
+        throw new Error("Введите пароль");
+      }
+
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password: params.password,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (data.session?.user) {
+        setSession(data.session);
+        await loadUserProfile(data.session);
+      }
+    } catch (err) {
+      console.error("Sign in failed:", err);
+      setError(err instanceof Error ? err.message : "Ошибка входа");
+    } finally {
+      setIsSigningIn(false);
     }
-
-    const { access_token, refresh_token, user: userData } = await response.json();
-    await SecureStore.setItemAsync("access_token", access_token);
-    await SecureStore.setItemAsync("refresh_token", refresh_token);
-    setUser(userData);
-    await syncProfile(userData);
   }
 
-  async function refreshToken() {
-    const storedRefreshToken = await SecureStore.getItemAsync("refresh_token");
-    if (!storedRefreshToken) { setUser(null); return; }
-
-    const response = await fetch(`${AUTH_URL}/oauth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_key: APP_KEY, refresh_token: storedRefreshToken }),
-    });
-
-    if (!response.ok) { await signOut(); return; }
-
-    const { access_token } = await response.json();
-    await SecureStore.setItemAsync("access_token", access_token);
-    const decoded = userFromToken(access_token);
-    if (decoded) { setUser(decoded); await syncProfile(decoded); }
+  async function signIn(provider: "google" | "apple") {
+    setError(
+      provider === "google"
+        ? "Google-вход подключим отдельно через Supabase OAuth."
+        : "Apple-вход пока не подключён."
+    );
   }
 
   async function signOut() {
-    await SecureStore.deleteItemAsync("access_token");
-    await SecureStore.deleteItemAsync("refresh_token");
+    setError(null);
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    setSession(null);
     setUser(null);
   }
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, isSigningIn, error, signIn, signOut, clearError }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        isLoading,
+        isSigningIn,
+        error,
+        signUp,
+        signInWithPassword,
+        signIn,
+        signOut,
+        clearError,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -282,6 +264,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (!context) throw new Error("useAuth must be used within AuthProvider");
+
+  if (!context) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+
   return context;
 }

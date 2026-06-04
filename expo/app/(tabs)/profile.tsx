@@ -45,7 +45,16 @@ interface FavoriteItem {
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const { user, isLoading, isSigningIn, error, signIn, signOut, clearError } = useAuth();
+ const {
+    user,
+    isLoading,
+    isSigningIn,
+    error,
+    signUp,
+    signInWithPassword,
+    signOut,
+    clearError,
+  } = useAuth();
   const { addItem } = useCart();
   const { profile, loyalty, transactions, isLoading: profileLoading, updateProfile } = useProfile(user?.id);
   const { favorites, isLoading: favsLoading, refetch: refetchFavs } = useFavorites(user?.id);
@@ -53,6 +62,11 @@ export default function ProfileScreen() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [activeSection, setActiveSection] = useState<"info" | "favorites" | "loyalty">("info");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [authPhone, setAuthPhone] = useState("");
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -69,6 +83,24 @@ export default function ProfileScreen() {
   async function saveProfile() {
     updateProfile({ name, phone });
     setEditing(false);
+  }
+
+  async function submitAuth() {
+    if (authMode === "login") {
+      await signInWithPassword({
+        email: authEmail,
+        password: authPassword,
+      });
+
+      return;
+    }
+
+    await signUp({
+      email: authEmail,
+      password: authPassword,
+      name: authName,
+      phone: authPhone,
+    });
   }
 
   async function removeFavorite(menuItemId: string) {
@@ -89,37 +121,118 @@ export default function ProfileScreen() {
   if (!user) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
-        <Animated.View style={[styles.authWrap, { opacity: fadeAnim }]}>
-          <View style={styles.authIcon}>
-            <User size={48} color={Colors.gold} />
-          </View>
-          <Text style={styles.authTitle}>Войдите в аккаунт</Text>
-          <Text style={styles.authSub}>Чтобы делать заказы, копить бонусы и отслеживать бронирования</Text>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Профиль</Text>
+          <Text style={styles.headerSubtitle}>Вход и регистрация</Text>
+        </View>
 
-          {error ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>{error}</Text>
-              <TouchableOpacity onPress={clearError} style={styles.errorDismiss}>
-                <Text style={styles.errorDismissText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[styles.scroll, { paddingBottom: 100 + insets.bottom }]}
+        >
+          <Animated.View style={[styles.authWrap, { opacity: fadeAnim }]}>
+            <View style={styles.authCard}>
+              <View style={styles.authIcon}>
+                <User size={44} color={Colors.gold} />
+              </View>
 
-          {isSigningIn ? (
-            <ActivityIndicator size="large" color={Colors.gold} style={{ marginVertical: 24 }} />
-          ) : (
-            <View style={styles.authBtns}>
-              <TouchableOpacity style={styles.googleBtn} onPress={() => signIn("google")} activeOpacity={0.85}>
-                <Text style={styles.googleBtnText}>G</Text>
-                <Text style={styles.googleLabel}>Войти через Google</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.appleBtn} onPress={() => signIn("apple")} activeOpacity={0.85}>
-                <Text style={styles.appleBtnIcon}></Text>
-                <Text style={styles.appleLabel}>Войти через Apple</Text>
-              </TouchableOpacity>
+              <Text style={styles.authTitle}>
+                {authMode === "login" ? "Вход в аккаунт" : "Регистрация"}
+              </Text>
+
+              <Text style={styles.authSub}>
+                {authMode === "login"
+                  ? "Войдите, чтобы делать заказы, копить бонусы и открыть личный кабинет"
+                  : "Создайте аккаунт, чтобы оформлять заказы и получать бонусы"}
+              </Text>
+
+              {error ? (
+                <View style={styles.errorBox}>
+                  <Text style={styles.errorText}>{error}</Text>
+                  <TouchableOpacity onPress={clearError} style={styles.errorDismiss}>
+                    <Text style={styles.errorDismissText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
+              <View style={styles.authForm}>
+                {authMode === "register" ? (
+                  <>
+                    <TextInput
+                      style={styles.authInput}
+                      value={authName}
+                      onChangeText={setAuthName}
+                      placeholder="Имя"
+                      placeholderTextColor={Colors.textSecondary}
+                    />
+
+                    <TextInput
+                      style={styles.authInput}
+                      value={authPhone}
+                      onChangeText={setAuthPhone}
+                      placeholder="Телефон"
+                      placeholderTextColor={Colors.textSecondary}
+                      keyboardType="phone-pad"
+                    />
+                  </>
+                ) : null}
+
+                <TextInput
+                  style={styles.authInput}
+                  value={authEmail}
+                  onChangeText={setAuthEmail}
+                  placeholder="Email"
+                  placeholderTextColor={Colors.textSecondary}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <TextInput
+                  style={styles.authInput}
+                  value={authPassword}
+                  onChangeText={setAuthPassword}
+                  placeholder="Пароль"
+                  placeholderTextColor={Colors.textSecondary}
+                  secureTextEntry
+                />
+
+                {isSigningIn ? (
+                  <ActivityIndicator
+                    size="large"
+                    color={Colors.gold}
+                    style={{ marginVertical: 18 }}
+                  />
+                ) : (
+                  <TouchableOpacity
+                    style={styles.primaryAuthBtn}
+                    onPress={submitAuth}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.primaryAuthBtnText}>
+                      {authMode === "login" ? "Войти" : "Зарегистрироваться"}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={styles.switchAuthBtn}
+                  onPress={() => {
+                    clearError();
+                    setAuthMode(authMode === "login" ? "register" : "login");
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.switchAuthText}>
+                    {authMode === "login"
+                      ? "Нет аккаунта? Зарегистрироваться"
+                      : "Уже есть аккаунт? Войти"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          )}
-        </Animated.View>
+          </Animated.View>
+        </ScrollView>
       </View>
     );
   }
@@ -328,40 +441,128 @@ const styles = StyleSheet.create({
   scroll: { paddingHorizontal: 20, paddingTop: 12 },
   header: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 4 },
   headerTitle: { fontSize: 32, fontWeight: "800" as const, color: Colors.text, letterSpacing: -0.8 },
+  headerSubtitle: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    marginTop: 4,
+  },
 
   // Auth
-  authWrap: { flex: 1, alignItems: "center", paddingTop: 60 },
+  authWrap: {
+    paddingTop: 8,
+  },
+
+  authCard: {
+    backgroundColor: Colors.surface1,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+  },
+
   authIcon: {
-    width: 100, height: 100, borderRadius: 50,
-    backgroundColor: `${Colors.gold}15`,
-    alignItems: "center", justifyContent: "center",
-    marginBottom: 24, borderWidth: 1, borderColor: `${Colors.gold}30`,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: `${Colors.gold}18`,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: `${Colors.gold}35`,
   },
-  authTitle: { fontSize: 26, fontWeight: "800" as const, color: Colors.text, letterSpacing: -0.5, marginBottom: 10 },
-  authSub: { fontSize: 14, color: Colors.textSecondary, textAlign: "center", lineHeight: 21, marginBottom: 32, paddingHorizontal: 20 },
+
+  authTitle: {
+    fontSize: 28,
+    fontWeight: "800" as const,
+    color: Colors.text,
+    letterSpacing: -0.5,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+
+  authSub: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    lineHeight: 21,
+    marginBottom: 24,
+    paddingHorizontal: 6,
+  },
+
   errorBox: {
-    flexDirection: "row", alignItems: "center",
-    backgroundColor: "#E0525220", borderRadius: 12, padding: 14, marginBottom: 20, gap: 10,
-    borderWidth: 1, borderColor: `${Colors.error}40`,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E0525220",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: `${Colors.error}40`,
   },
-  errorText: { color: Colors.error, flex: 1, fontSize: 13 },
-  errorDismiss: { padding: 4 },
-  errorDismissText: { color: Colors.error, fontSize: 14, fontWeight: "700" as const },
-  authBtns: { width: "100%", gap: 12 },
-  googleBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    backgroundColor: Colors.surface2, borderRadius: 16, paddingVertical: 16, gap: 12,
-    width: "100%", borderWidth: 1, borderColor: Colors.border,
+
+  errorText: {
+    color: Colors.error,
+    flex: 1,
+    fontSize: 13,
   },
-  googleBtnText: { fontSize: 18, fontWeight: "700" as const, color: Colors.text },
-  googleLabel: { fontSize: 15, fontWeight: "600" as const, color: Colors.text },
-  appleBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    backgroundColor: "#FFFFFF", borderRadius: 16, paddingVertical: 16, gap: 12,
+
+  errorDismiss: {
+    padding: 4,
+  },
+
+  errorDismissText: {
+    color: Colors.error,
+    fontSize: 14,
+    fontWeight: "700" as const,
+  },
+
+  authForm: {
     width: "100%",
+    gap: 12,
   },
-  appleBtnIcon: { fontSize: 20, fontWeight: "700" as const, color: "#000000" },
-  appleLabel: { fontSize: 15, fontWeight: "600" as const, color: "#000000" },
+
+  authInput: {
+    backgroundColor: Colors.surface2,
+    borderWidth: 1,
+    borderColor: "#343434",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    fontSize: 15,
+    color: Colors.text,
+  },
+
+  primaryAuthBtn: {
+    backgroundColor: Colors.gold,
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+
+  primaryAuthBtnText: {
+    fontSize: 15,
+    fontWeight: "700" as const,
+    color: Colors.bg,
+  },
+
+  switchAuthBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+
+  switchAuthText: {
+    fontSize: 14,
+    fontWeight: "600" as const,
+    color: Colors.gold,
+  },
 
   // Profile
   profileHeader: { flexDirection: "row", gap: 16, marginBottom: 24, alignItems: "flex-start" },
